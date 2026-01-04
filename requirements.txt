@@ -1,0 +1,16 @@
+# Financial Market Theory Exam Engine
+# Dependencies for Streamlit Cloud deployment
+
+# Core framework
+streamlit>=1.28.0
+
+# Scientific computing
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+
+# Optimization (optional but recommended for advanced portfolio problems)
+cvxpy>=1.4.0
+
+# Plotting
+matplotlib>=3.7.0

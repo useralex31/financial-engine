@@ -1,6 +1,4 @@
-# 📊 Financial Market Theory Exam Engine
-
-A comprehensive, interactive exam preparation tool for Financial Market Theory (FMT) courses. Built with Streamlit for easy deployment and use.
+# 📊 Financial Market Theory
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://your-app-url.streamlit.app)
 
@@ -123,18 +121,9 @@ The app can be customized via `.streamlit/config.toml`:
 - Server settings
 - Upload size limits
 
-## 📝 License
-
-MIT License - See LICENSE file for details.
-
 ## 🤝 Contributing
 
 Contributions welcome! Please feel free to submit issues or pull requests.
-
-## 📧 Contact
-
-For questions or feedback, please open an issue on GitHub.
-
 ---
 
-**Disclaimer**: This tool is for educational purposes only. Always verify calculations independently for actual exam preparation.
+**Disclaimer**: This tool is for educational purposes only. Always verify calculations independently.

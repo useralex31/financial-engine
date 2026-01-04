@@ -3922,24 +3922,26 @@ class ImmunizerThreeBond:
     
     This provides second-order protection against yield curve changes.
     """
-    # Bond A properties
+    # Bond A properties (required)
     duration_A: float
     convexity_A: float
-    price_A: float = 100.0
     
-    # Bond B properties
+    # Bond B properties (required)
     duration_B: float
     convexity_B: float
-    price_B: float = 100.0
     
-    # Bond C properties
+    # Bond C properties (required)
     duration_C: float
     convexity_C: float
-    price_C: float = 100.0
     
-    # Liability properties
+    # Liability properties (required)
     duration_liability: float
     convexity_liability: float
+    
+    # Optional properties with defaults (must come after required fields)
+    price_A: float = 100.0
+    price_B: float = 100.0
+    price_C: float = 100.0
     pv_liability: float = 1_000_000.0
     
     def __post_init__(self):

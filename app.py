@@ -12364,10 +12364,11 @@ def portfolio_optimizer_module_integrated():
         "If the problem gives a **Correlation/Covariance Matrix** and asks for **Weights**, use this module."
         ''')
     
-    tab1, tab2, tab3 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Unconstrained (Closed Form)", 
         "🔒 Constrained (Solver)",
-        "🌱 ESG-Extended"
+        "🌱 ESG-Extended",
+        "🔢 Paste Var-Cov Matrix"
     ])
     
     with tab1:
@@ -12378,6 +12379,9 @@ def portfolio_optimizer_module_integrated():
     
     with tab3:
         esg_portfolio_section()
+    
+    with tab4:
+        varcov_matrix_input_tab()
 
 
 def constrained_portfolio_tab():
@@ -12795,6 +12799,207 @@ def portfolio_optimizer_basic_tab():
             
             with st.expander("📝 How to do this in Excel"):
                 st.markdown(optimizer.get_excel_instructions())
+        
+        except Exception as e:
+            st.error(f"❌ Calculation error: {str(e)}")
+
+
+def varcov_matrix_input_tab():
+    """Allow direct entry of covariance matrix (Σ) or its inverse (Σ⁻¹)."""
+    st.markdown("""
+    Paste a **variance-covariance matrix** (Σ) or its **inverse** (Σ⁻¹), along with expected returns (μ).
+    The engine will decompose Σ into volatilities and correlations, then solve Tangency, GMV, and Optimal portfolios.
+    """)
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        gamma = st.number_input("Risk Aversion (γ)", value=4.0, min_value=0.1, step=0.5, key="varcov_gamma")
+        rf = st.number_input("Risk-Free Rate (rf)", value=0.02, format="%.4f", key="varcov_rf")
+    
+    with col2:
+        matrix_type = st.radio(
+            "Matrix Provided",
+            ["covariance", "inverse"],
+            format_func=lambda x: "Covariance (Σ)" if x == "covariance" else "Inverse Covariance (Σ⁻¹)",
+            key="varcov_type"
+        )
+    
+    matrix_input = st.text_area(
+        "Paste Σ or Σ⁻¹",
+        value="0.0400, 0.0060, 0.0080\n0.0060, 0.0900, 0.0100\n0.0080, 0.0100, 0.0250",
+        height=150,
+        help="Rows separated by new lines. Decimals preferred (e.g., 0.04, not 4%).",
+        key="varcov_matrix"
+    )
+    
+    returns_input = st.text_area(
+        "Expected Returns (μ)",
+        value="0.08, 0.10, 0.06",
+        height=80,
+        help="One value per asset. Decimals preferred (8% = 0.08).",
+        key="varcov_returns"
+    )
+    
+    if st.button("🧮 Calculate from Matrix", key="varcov_calc"):
+        try:
+            mu = parse_messy_input(returns_input)
+            matrix_raw = parse_matrix_input(matrix_input)
+            
+            if matrix_raw.size == 0:
+                st.error("❌ Could not parse matrix input. Ensure rows/columns are numeric.")
+                return
+            
+            if mu.size == 0:
+                st.error("❌ Could not parse expected returns. Check formatting and units.")
+                return
+            
+            if matrix_raw.ndim != 2 or matrix_raw.shape[0] != matrix_raw.shape[1]:
+                st.error(f"❌ Matrix must be square. Got shape {matrix_raw.shape}.")
+                return
+            
+            n_assets = len(mu)
+            if matrix_raw.shape[0] != n_assets:
+                st.error(f"❌ Matrix dimension ({matrix_raw.shape[0]}) must match number of expected returns ({n_assets}).")
+                return
+            
+            if matrix_type == "inverse":
+                try:
+                    cov_matrix = np.linalg.inv(matrix_raw)
+                except np.linalg.LinAlgError:
+                    st.error("❌ Provided inverse matrix (Σ⁻¹) cannot be inverted. Please check values.")
+                    return
+            else:
+                # Enforce symmetry
+                cov_matrix = (matrix_raw + matrix_raw.T) / 2
+            
+            variances = np.diag(cov_matrix)
+            if np.any(variances <= 0):
+                st.error("❌ Variances must be positive. Double-check matrix scaling (use decimals, not %).")
+                return
+            
+            sigma = np.sqrt(variances)
+            if np.any(sigma == 0):
+                st.error("❌ Standard deviations cannot be zero.")
+                return
+            
+            D_inv = np.diag(1.0 / sigma)
+            corr_matrix = D_inv @ cov_matrix @ D_inv
+            
+            asset_labels = [f'Asset {i+1}' for i in range(n_assets)]
+            
+            st.subheader("📊 Matrices")
+            st.write("**Covariance Matrix (Σ):**")
+            cov_df = pd.DataFrame(cov_matrix, index=asset_labels, columns=asset_labels)
+            st.dataframe(cov_df.style.format("{:.6f}"))
+            
+            try:
+                cov_inv = np.linalg.inv(cov_matrix)
+                st.write("**Inverse Covariance Matrix (Σ⁻¹):**")
+                cov_inv_df = pd.DataFrame(cov_inv, index=asset_labels, columns=asset_labels)
+                st.dataframe(cov_inv_df.style.format("{:.4f}"))
+            except np.linalg.LinAlgError:
+                st.warning("⚠️ Covariance matrix is singular (cannot display inverse).")
+                return
+            
+            st.subheader("📐 Volatilities & Correlations")
+            stats_df = pd.DataFrame({
+                "Asset": asset_labels,
+                "Variance (σ²)": variances,
+                "Std Dev (σ)": sigma,
+                "σ (%)": sigma * 100
+            })
+            st.dataframe(stats_df.style.format({
+                "Variance (σ²)": "{:.6f}",
+                "Std Dev (σ)": "{:.4f}",
+                "σ (%)": "{:.2f}%"
+            }))
+            
+            st.write("**Correlation Matrix (ρ):**")
+            corr_df = pd.DataFrame(corr_matrix, index=asset_labels, columns=asset_labels)
+            st.dataframe(corr_df.style.format("{:.4f}"))
+            
+            st.latex(r"\sigma_i = \sqrt{\Sigma_{ii}}")
+            st.latex(r"\rho_{ij} = \dfrac{\Sigma_{ij}}{\sigma_i \times \sigma_j}")
+            
+            try:
+                optimizer = MeanVarianceOptimizer(
+                    expected_returns=mu,
+                    covariance_matrix=cov_matrix,
+                    risk_free_rate=rf,
+                    risk_aversion=gamma
+                )
+            except np.linalg.LinAlgError:
+                st.error("❌ Covariance matrix is singular (cannot invert for optimization).")
+                return
+            except Exception as e:
+                st.error(f"❌ {str(e)}")
+                return
+            
+            tangency = optimizer.tangency_portfolio()
+            gmv = optimizer.gmv_portfolio()
+            optimal = optimizer.optimal_portfolio()
+            
+            st.subheader("📊 Portfolio Results")
+            results_df = pd.DataFrame({
+                "Portfolio": ["Tangency", "GMV", f"Optimal (γ={gamma})"],
+                "E[r]": [
+                    f"{tangency['expected_return']*100:.2f}%",
+                    f"{gmv['expected_return']*100:.2f}%",
+                    f"{optimal['expected_return']*100:.2f}%"
+                ],
+                "Volatility": [
+                    f"{tangency['volatility']*100:.2f}%",
+                    f"{gmv['volatility']*100:.2f}%",
+                    f"{optimal['volatility']*100:.2f}%"
+                ],
+                "Sharpe": [
+                    f"{tangency['sharpe_ratio']:.4f}",
+                    f"{gmv['sharpe_ratio']:.4f}",
+                    f"{optimal['sharpe_ratio']:.4f}"
+                ]
+            })
+            
+            for i in range(n_assets):
+                results_df[f"w_{i+1}"] = [
+                    f"{tangency['weights'][i]:.4f}",
+                    f"{gmv['weights'][i]:.4f}",
+                    f"{optimal['weights'][i]:.4f}"
+                ]
+            
+            st.dataframe(results_df)
+            
+            frontier = optimizer.efficient_frontier()
+            
+            fig, ax = plt.subplots(figsize=(10, 6))
+            if not frontier.empty:
+                ax.plot(frontier['volatility'], frontier['return'], 'b-', linewidth=2, label='Efficient Frontier')
+            
+            ax.scatter([gmv['volatility']], [gmv['expected_return']], s=150, c='green', marker='s', label='GMV', zorder=5)
+            ax.scatter([tangency['volatility']], [tangency['expected_return']], s=150, c='red', marker='^', label='Tangency', zorder=5)
+            ax.scatter([optimal['volatility']], [optimal['expected_return']], s=150, c='purple', marker='D', label=f'Optimal (γ={gamma})', zorder=5)
+            ax.scatter(sigma, mu, s=100, c='gray', marker='o', label='Assets', zorder=4)
+            
+            if not frontier.empty:
+                cml_vols = np.linspace(0, max(frontier['volatility']) * 1.1, 100)
+                cml_returns = rf + tangency['sharpe_ratio'] * cml_vols
+                ax.plot(cml_vols, cml_returns, 'r--', alpha=0.5, label='CML')
+            else:
+                st.warning("⚠️ Efficient frontier could not be generated for the provided inputs.")
+            
+            ax.set_xlabel('Volatility')
+            ax.set_ylabel('Expected Return')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+            plt.close()
+            
+            with st.expander("🧾 Step-by-step solution"):
+                st.markdown("Matrix algebra used for each portfolio:")
+                st.latex(r"\pi_{tan} = \dfrac{\Sigma^{-1}(\mu - r_f \cdot \mathbf{1})}{\mathbf{1}^T \Sigma^{-1}(\mu - r_f \cdot \mathbf{1})}")
+                st.latex(r"\pi_{GMV} = \dfrac{\Sigma^{-1} \mathbf{1}}{\mathbf{1}^T \Sigma^{-1} \mathbf{1}}")
+                st.latex(r"\pi^{*} = \dfrac{1}{\gamma} \Sigma^{-1} (\mu - r_f \cdot \mathbf{1})")
+                st.markdown("Copy Σ or Σ⁻¹ directly from the table above to replicate in Excel or a calculator.")
         
         except Exception as e:
             st.error(f"❌ Calculation error: {str(e)}")

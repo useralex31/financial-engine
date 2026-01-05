@@ -7406,7 +7406,8 @@ def bond_pricing_section():
             else:
                 # Annuity: equal payments
                 if period_ytm > 0:
-                    annuity_payment = face_value * period_ytm / (1 - (1 + period_ytm) ** (-n_periods))
+                    # Use coupon rate per period for annuity payment; YTM is only for discounting.
+                    annuity_payment = face_value * period_coupon_rate / (1 - (1 + period_coupon_rate) ** (-n_periods))
                 else:
                     annuity_payment = face_value / n_periods
                 cash_flows = np.full(n_periods, annuity_payment)
@@ -7522,6 +7523,8 @@ def bond_pricing_section():
 
 6. **Price Approximation using Duration & Convexity:**
    $$\Delta P \approx -D_{{Mod}} \cdot P \cdot \Delta y + \frac{{1}}{{2}} \cdot Convexity \cdot P \cdot (\Delta y)^2$$
+
+Sanity check (annuity payment): FV=1000, c=6%, m=2, n=10 ⇒ PMT = 1000×(0.06/2)/(1-(1+0.06/2)^-10) = 117.23
                 """)
             
             # ================================================================

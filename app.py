@@ -1797,6 +1797,26 @@ def run_exam_regression_tests(verbose: bool = True) -> Tuple[bool, List[str]]:
         log(f"   FAILED: {str(e)}")
         all_passed = False
     
+    # Test 10: Parse Percent Sign Handling
+    log("\n[Test 10] Parse Percent Sign Handling")
+    try:
+        values_raw = parse_messy_input("8, 12")
+        assert np.allclose(values_raw, np.array([8.0, 12.0])), \
+            f"Expected raw values [8, 12], got {values_raw}"
+        
+        values_pct = parse_messy_input("8%, 12%")
+        assert np.allclose(values_pct, np.array([0.08, 0.12])), \
+            f"Expected percent values [0.08, 0.12], got {values_pct}"
+        
+        values_decimal = parse_messy_input("0.08 0.12")
+        assert np.allclose(values_decimal, np.array([0.08, 0.12])), \
+            f"Expected decimal values [0.08, 0.12], got {values_decimal}"
+        
+        log("   PASSED: Percent conversion only when '%' present")
+    except Exception as e:
+        log(f"   FAILED: {str(e)}")
+        all_passed = False
+    
     log("\n" + "=" * 60)
     if all_passed:
         log("ALL TESTS PASSED")
@@ -1821,23 +1841,22 @@ def parse_messy_input(text: str) -> np.ndarray:
         return np.array([])
     
     # Remove common artifacts
-    text = text.replace('\t', ' ').replace('\n', ' ')
+    text_clean = text.replace('\t', ' ').replace('\n', ' ')
+    has_percent = '%' in text_clean
     
     # Remove percentage signs and convert
-    text = text.replace('%', '')
+    text_clean = text_clean.replace('%', '')
     
     # Find all numbers (including negatives and decimals)
     pattern = r'-?\d+\.?\d*'
-    matches = re.findall(pattern, text)
+    matches = re.findall(pattern, text_clean)
     
     if not matches:
         return np.array([])
     
     values = [float(m) for m in matches]
     
-    # Heuristic: if values seem like percentages (>1 and <100), convert
-    # Only apply if ALL values look like percentages
-    if all(1 < abs(v) < 100 for v in values if v != 0):
+    if has_percent:
         values = [v / 100 for v in values]
     
     return np.array(values)

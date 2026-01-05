@@ -5056,6 +5056,7 @@ class HumanCapitalCalc:
     mu_market: float
     sigma_market: float
     risk_free_rate: float
+    timing_convention: str = "munk_fmt"
     risk_aversion: float = 4.0
     
     # Correlation parameters
@@ -5071,11 +5072,13 @@ class HumanCapitalCalc:
         """
         Calculate present value of human capital using growing annuity formula.
         
-        Uses ANNUITY DUE convention (payments at beginning of period),
-        which matches standard FMT exam answers.
+        Timing conventions:
+        - munk_fmt: first future payment is Y*(1+g) at t=1
+        - ordinary: first payment is Y at t=1
+        - annuity_due: first payment is Y at t=0
         
-        When r ≠ g: L = Y × (1+r) × [1 - ((1+g)/(1+r))^T] / (r - g)
-        When r = g: L = Y × T
+        When r != g: L = Y * (1+r) * [1 - ((1+g)/(1+r))^T] / (r - g)
+        When r = g: L = Y * T
         """
         g = self.growth_rate
         r = self.discount_rate
@@ -5083,18 +5086,23 @@ class HumanCapitalCalc:
         Y = self.income
         
         if abs(r - g) < 1e-6:
-            # Limit case when r ≈ g: L = Y × T
-            self.human_capital = Y * T
+            # Limit case when r == g for ordinary annuity base
+            ordinary_annuity = Y * T / (1 + r)
         else:
-            # Growing annuity due formula (payments at start of period)
-            # L = Y × (1+r) × [1 - ((1+g)/(1+r))^T] / (r - g)
+            # Growing annuity base (first payment Y at t=1)
             growth_factor = (1 + g) / (1 + r)
             ordinary_annuity = Y * (1 - growth_factor ** T) / (r - g)
-            self.human_capital = ordinary_annuity * (1 + r)  # Convert to annuity due
+        
+        if self.timing_convention == "munk_fmt":
+            self.human_capital = ordinary_annuity * (1 + g)
+        elif self.timing_convention == "annuity_due":
+            self.human_capital = ordinary_annuity * (1 + r)
+        else:
+            self.human_capital = ordinary_annuity
         
         self.total_wealth = self.wealth + self.human_capital
         self.leverage_ratio = self.human_capital / self.wealth if self.wealth > 0 else float('inf')
-    
+
     def _calculate_optimal_allocation(self):
         """
         Calculate optimal stock allocation with human capital.
@@ -5195,72 +5203,94 @@ class HumanCapitalCalc:
     
     def get_latex_formulas(self) -> Dict[str, str]:
         """Return LaTeX formulas."""
+        if self.timing_convention == "munk_fmt":
+            hc_formula = (
+                r'L_0 = (1+g) \times \frac{Y_0 \left[1 - \left(\frac{1+g}{1+r}\right)^T\right]}{r - g}'
+                r'\quad \text{(or } Y_0 \times T \text{ when } r = g \text{)}'
+            )
+        elif self.timing_convention == "annuity_due":
+            hc_formula = (
+                r'L_0 = (1+r) \times \frac{Y_0 \left[1 - \left(\frac{1+g}{1+r}\right)^T\right]}{r - g}'
+                r'\quad \text{(or } Y_0 \times T \text{ when } r = g \text{)}'
+            )
+        else:
+            hc_formula = (
+                r'L_0 = \frac{Y_0 \left[1 - \left(\frac{1+g}{1+r}\right)^T\right]}{r - g}'
+                r'\quad \text{(or } \frac{Y_0 \times T}{1+r} \text{ when } r = g \text{)}'
+            )
         return {
-            'human_capital': r'L_0 = (1+r) \times \frac{Y_0 \left[1 - \left(\frac{1+g}{1+r}\right)^T\right]}{r - g} \quad \text{(or } Y_0 \times T \text{ when } r = g \text{)}',
+            'human_capital': hc_formula,
             'leverage_ratio': r'l = \frac{L_0}{W}',
             'myopic_demand': r'M = \frac{\mu - r_f}{\gamma \sigma_S^2}',
             'hedging_demand': r'H = l \cdot \frac{\rho_{SL} \sigma_L}{\sigma_S}',
             'optimal_weight': r'\pi^* = M(1 + l) - H = \frac{\mu - r_f}{\gamma \sigma_S^2}(1 + \frac{L_0}{W}) - \frac{L_0}{W} \cdot \frac{\rho_{SL} \sigma_L}{\sigma_S}'
         }
-    
+
     def get_excel_instructions(self) -> str:
         """Return Excel instructions."""
-        # Determine which formula was used
         if abs(self.discount_rate - self.growth_rate) < 1e-6:
-            hc_formula = f"={self.income} * {self.years}"
-            hc_note = "Since r = g, use simplified formula: L₀ = Y × T"
+            base_formula = f"={self.income} * {self.years} / (1+{self.discount_rate})"
+            base_note = "Base ordinary annuity (r = g): L0 = Y * T / (1+r)"
         else:
-            hc_formula = f"={self.income} * (1+{self.discount_rate}) * (1 - ((1+{self.growth_rate})/(1+{self.discount_rate}))^{self.years}) / ({self.discount_rate} - {self.growth_rate})"
-            hc_note = "Using annuity due formula (payments at start of period)"
+            base_formula = (
+                f"={self.income} * (1 - ((1+{self.growth_rate})/(1+{self.discount_rate}))^{self.years}) "
+                f"/ ({self.discount_rate} - {self.growth_rate})"
+            )
+            base_note = "Base ordinary annuity (first payment Y at t=1)"
+        
+        if self.timing_convention == "munk_fmt":
+            multiplier = f"(1+{self.growth_rate})"
+            timing_note = "Munk/FMT timing: first future payment is Y*(1+g), so multiply by (1+g)."
+        elif self.timing_convention == "annuity_due":
+            multiplier = f"(1+{self.discount_rate})"
+            timing_note = "Annuity due timing: payments start at t=0, so multiply by (1+r)."
+        else:
+            multiplier = ""
+            timing_note = "Ordinary timing: first payment is Y at t=1, so no multiplier."
+        
+        hc_formula = base_formula + (f" * {multiplier}" if multiplier else "")
         
         return f"""
 **Excel Implementation for Human Capital & Optimal Allocation:**
 
-**Step 1: Calculate Human Capital (Growing Annuity Due)**
+**Step 1: Calculate Human Capital (Timing Convention)**
 
-{hc_note}
+{base_note}
 
-When r ≠ g: L₀ = (1+r) × Y₀ × [1 - ((1+g)/(1+r))^T] / (r - g)
-When r = g: L₀ = Y₀ × T
+{timing_note}
 
 Excel:
 `{hc_formula}`
-Result: L₀ = ${self.human_capital:,.2f}
+Result: L?,? = ${self.human_capital:,.2f}
 
 **Step 2: Calculate Leverage Ratio**
 `=L0/W` = {self.human_capital:,.0f}/{self.wealth:,.0f} = {self.leverage_ratio:.4f}
 
 **Step 3: Calculate Myopic Demand (M)**
-`=(μ - rf) / (γ × σ²)`
-`=({self.mu_market} - {self.risk_free_rate}) / ({self.risk_aversion} × {self.sigma_market}^2)`
+`=(I? - rf) / (I3 A- I?A?)`
+`=({self.mu_market} - {self.risk_free_rate}) / ({self.risk_aversion} A- {self.sigma_market}^2)`
 Result: M = {self.myopic_demand:.4f}
 
 **Step 4: Calculate Hedging Demand (H)**
-`=l × ρ × σ_L / σ_S`
-`={self.leverage_ratio:.4f} × {self.corr_labor_market} × {self.sigma_labor} / {self.sigma_market}`
+`=l A- I? A- I?_L / I?_S`
+`={self.leverage_ratio:.4f} A- {self.corr_labor_market} A- {self.sigma_labor} / {self.sigma_market}`
 Result: H = {self.hedging_demand:.4f}
 
 **Step 5: Calculate Optimal Weight**
-`=M × (1 + l) - H`
-`={self.myopic_demand:.4f} × (1 + {self.leverage_ratio:.4f}) - {self.hedging_demand:.4f}`
-Result: π* = {self.optimal_weight:.4f} = {self.optimal_weight*100:.2f}%
+`=M A- (1 + l) - H`
+`={self.myopic_demand:.4f} A- (1 + {self.leverage_ratio:.4f}) - {self.hedging_demand:.4f}`
+Result: I?* = {self.optimal_weight:.4f} = {self.optimal_weight*100:.2f}%
 
 **Step 6: Dollar Allocation**
-Stock Investment = π* × W = {self.optimal_weight:.4f} × ${self.wealth:,.0f} = ${self.stock_investment:,.2f}
-Risk-Free = (1 - π*) × W = ${self.riskfree_investment:,.2f}
+Stock Investment = I?* A- W = {self.optimal_weight:.4f} A- ${self.wealth:,.0f} = ${self.stock_investment:,.2f}
+Risk-Free = (1 - I?*) A- W = ${self.riskfree_investment:,.2f}
 
 **Interpretation:**
-- {'Leverage (borrowing) indicated' if self.optimal_weight > 1 else 'No leverage needed'}
-- {'Short position in stocks indicated' if self.optimal_weight < 0 else 'Long stocks'}
+- {"Leverage (borrowing) indicated" if self.optimal_weight > 1 else "No leverage needed"}
+- {"Short position in stocks indicated" if self.optimal_weight < 0 else "Long stocks"}
 - Hedging reduces stock weight by {self.hedging_demand*100:.2f}% due to {self.corr_labor_market*100:.0f}% correlation with labor income
 """
 
-
-# =============================================================================
-# MODULE C: FACTOR MODEL ENGINE (Priority P1) - CORE CLASSES
-# =============================================================================
-
-@dataclass
 class FactorAnalyzer:
     """
     Multi-Factor Risk Analysis Engine.
@@ -7988,57 +8018,36 @@ def human_capital_module():
             help="Correlation coefficient between stock returns and labor income growth (ρ_SL)"
         )
     
-    # Annuity Type Selection with Explanations
+    # Income Timing Convention with Explanations
     st.write("---")
-    with st.expander("⚙️ **Annuity Type Selection** — Which formula should I use?", expanded=True):
+    with st.expander("⚙️ **Income Timing Convention** — Which formula should I use?", expanded=True):
         st.markdown(r"""
         ## Quick Decision Guide
         
-        | Annuity Type | When r = g | When r ≠ g | Use When |
-        |--------------|------------|------------|----------|
-        | **Annuity Due** (Default) | $L = Y \times T$ | $L = (1+r) \times \frac{Y[1-(\frac{1+g}{1+r})^T]}{r-g}$ | Income at **START** of period |
-        | **Ordinary Annuity** | $L = \frac{Y \times T}{1+r}$ | $L = \frac{Y[1-(\frac{1+g}{1+r})^T]}{r-g}$ | Income at **END** of period |
+        | Timing Convention | When r = g | When r != g | Use When |
+        |-------------------|------------|-------------|----------|
+        | **FMT/Munk** | $L = Y * T$ | $L = (1+g) * \frac{Y[1-(\frac{1+g}{1+r})^T]}{r-g}$ | Current income now; first future payment is $Y*(1+g)$ at t=1 |
+        | **Ordinary** | $L = \frac{Y * T}{1+r}$ | $L = \frac{Y[1-(\frac{1+g}{1+r})^T]}{r-g}$ | First payment $Y$ at t=1 |
+        | **Annuity Due** | $L = Y * T$ | $L = (1+r) * \frac{Y[1-(\frac{1+g}{1+r})^T]}{r-g}$ | First payment $Y$ at t=0 |
         
         ---
         
-        ### Annuity Due (Payments at Beginning) — **DEFAULT**
-        
-        **Use when:**
-        - The problem says income is received at the **beginning** of each period
-        - The problem says "paid in advance" or "immediate"
-        - **Most FMT exam problems use this convention**
-        - When r = g, the answer should be exactly $L = Y \times T$
-        
-        **Example:** Hannah earns $50,000/year for 20 years with r = g = 4%
-        - Annuity Due: L = $50,000 × 20 = **$1,000,000** ✓
-        
-        ---
-        
-        ### Ordinary Annuity (Payments at End)
-        
-        **Use when:**
-        - The problem explicitly says income is received at the **end** of each period
-        - The problem says "paid in arrears"
-        - Standard financial calculator default (be careful!)
-        
-        **Example:** Same as above but with ordinary annuity
-        - Ordinary: L = $50,000 × 20 / 1.04 = **$961,538** 
-        
-        ---
-        
-        ⚠️ **Exam Tip:** If the problem doesn't specify, use **Annuity Due**. 
-        When r = g, check if the answer is Y×T (annuity due) or Y×T/(1+r) (ordinary).
+        **Exam Tip:** FMT problems typically follow the Munk convention. If timing is unclear, check whether the solution uses a (1+g) or (1+r) multiplier.
         """)
     
-    annuity_type = st.radio(
-        "Select Annuity Type:",
-        ["Annuity Due (payments at START of period) — Default", 
-         "Ordinary Annuity (payments at END of period)"],
-        key="hc_annuity_type",
-        help="Choose based on when income is received. Most exam problems use Annuity Due."
+    timing_convention = st.selectbox(
+        "Income Timing Convention",
+        ["munk_fmt", "ordinary", "annuity_due"],
+        format_func=lambda x: {
+            "munk_fmt": "FMT/Munk: Current income now, first future payment = Y*(1+g) at t=1",
+            "ordinary": "Ordinary: First payment = Y at t=1",
+            "annuity_due": "Annuity Due: First payment = Y at t=0"
+        }[x],
+        index=0,
+        key="hc_timing",
+        help="FMT exams use Munk convention. Select based on how the problem defines income timing."
     )
-    
-    use_annuity_due = "Annuity Due" in annuity_type
+
     
     if st.button("🧮 Calculate Human Capital & Optimal Allocation", key="calc_hc"):
         try:
@@ -8046,34 +8055,37 @@ def human_capital_module():
             # HUMAN CAPITAL CALCULATION
             # =================================================================
             
-            if use_annuity_due:
-                # ANNUITY DUE: Payments at START of period
-                # When r ≠ g: L = Y × (1+r) × [1 - ((1+g)/(1+r))^T] / (r - g)
-                # When r = g: L = Y × T
-                annuity_type_str = "Annuity Due (payments at start of period)"
-                
-                if abs(discount_rate - growth_rate) < 0.0001:
-                    human_capital = current_income * years_remaining
-                    formula_used = f"L = Y × T = ${current_income:,.0f} × {years_remaining} = ${human_capital:,.2f}"
-                else:
-                    growth_factor = (1 + growth_rate) / (1 + discount_rate)
-                    ordinary_annuity = current_income * (1 - growth_factor ** years_remaining) / (discount_rate - growth_rate)
-                    human_capital = ordinary_annuity * (1 + discount_rate)
-                    formula_used = f"L = (1+r) × Y × [1 - ((1+g)/(1+r))^T] / (r-g) = ${human_capital:,.2f}"
+            if abs(discount_rate - growth_rate) < 0.0001:
+                ordinary_annuity = current_income * years_remaining / (1 + discount_rate)
+                base_formula = (
+                    f"Base ordinary PV = Y * T / (1+r) = "
+                    f"${current_income:,.0f} * {years_remaining} / {1+discount_rate:.4f} = ${ordinary_annuity:,.2f}"
+                )
             else:
-                # ORDINARY ANNUITY: Payments at END of period
-                # When r ≠ g: L = Y × [1 - ((1+g)/(1+r))^T] / (r - g)
-                # When r = g: L = Y × T / (1+r)
-                annuity_type_str = "Ordinary Annuity (payments at end of period)"
-                
-                if abs(discount_rate - growth_rate) < 0.0001:
-                    human_capital = current_income * years_remaining / (1 + discount_rate)
-                    formula_used = f"L = Y × T / (1+r) = ${current_income:,.0f} × {years_remaining} / {1+discount_rate} = ${human_capital:,.2f}"
-                else:
-                    growth_factor = (1 + growth_rate) / (1 + discount_rate)
-                    human_capital = current_income * (1 - growth_factor ** years_remaining) / (discount_rate - growth_rate)
-                    formula_used = f"L = Y × [1 - ((1+g)/(1+r))^T] / (r-g) = ${human_capital:,.2f}"
+                growth_factor = (1 + growth_rate) / (1 + discount_rate)
+                ordinary_annuity = current_income * (1 - growth_factor ** years_remaining) / (discount_rate - growth_rate)
+                base_formula = (
+                    "Base ordinary PV = Y * [1 - ((1+g)/(1+r))^T] / (r-g) = "
+                    f"${ordinary_annuity:,.2f}"
+                )
             
+            if timing_convention == "munk_fmt":
+                annuity_type_str = "FMT/Munk: current income now; first future payment is Y*(1+g) at t=1"
+                timing_multiplier = f"(1+g) = {1+growth_rate:.4f}"
+                timing_reason = "applies growth to the first future payment"
+                human_capital = ordinary_annuity * (1 + growth_rate)
+            elif timing_convention == "annuity_due":
+                annuity_type_str = "Annuity Due: first payment is Y at t=0"
+                timing_multiplier = f"(1+r) = {1+discount_rate:.4f}"
+                timing_reason = "shifts payments to the beginning of each period"
+                human_capital = ordinary_annuity * (1 + discount_rate)
+            else:
+                annuity_type_str = "Ordinary: first payment is Y at t=1"
+                timing_multiplier = "No multiplier"
+                timing_reason = "payments already start at t=1"
+                human_capital = ordinary_annuity
+            
+            formula_used = f"{base_formula}. Timing adjustment: {timing_multiplier} ({timing_reason})."
             total_wealth = financial_wealth + human_capital
             
             # =================================================================
@@ -8110,7 +8122,7 @@ def human_capital_module():
             st.subheader("📊 Human Capital Valuation")
             
             # Show which annuity type was used
-            st.info(f"**Annuity Type Used:** {annuity_type_str}")
+            st.info(f"**Timing Convention Used:** {annuity_type_str}")
             st.markdown(f"**Formula:** {formula_used}")
 
             col1, col2, col3 = st.columns(3)
@@ -11186,6 +11198,19 @@ def human_capital_section():
         growth = st.number_input("Income Growth Rate (g)", value=0.03, format="%.4f", key="hc_growth")
         discount = st.number_input("Discount Rate (r)", value=0.05, format="%.4f", key="hc_discount")
         years = st.number_input("Working Years (T)", value=30, min_value=1, key="hc_years")
+
+        timing_convention = st.selectbox(
+            "Income Timing Convention",
+            ["munk_fmt", "ordinary", "annuity_due"],
+            format_func=lambda x: {
+                "munk_fmt": "FMT/Munk: Current income now, first future payment = Y*(1+g) at t=1",
+                "ordinary": "Ordinary: First payment = Y at t=1",
+                "annuity_due": "Annuity Due: First payment = Y at t=0"
+            }[x],
+            index=0,
+            key="hc_timing_section",
+            help="FMT exams use Munk convention. Select based on how the problem defines income timing."
+        )
     
     with col2:
         st.write("**Market Parameters:**")
@@ -11211,7 +11236,8 @@ def human_capital_section():
                 risk_free_rate=rf,
                 risk_aversion=gamma,
                 corr_labor_market=corr_lm,
-                sigma_labor=sigma_labor
+                sigma_labor=sigma_labor,
+                timing_convention=timing_convention
             )
             
             st.subheader("📊 Results Summary")

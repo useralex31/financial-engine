@@ -7374,7 +7374,16 @@ def bond_pricing_section():
     # Initialize session state for bond data
     if 'bond_calculated' not in st.session_state:
         st.session_state.bond_calculated = False
-    
+
+    # Input mode selector: Yield → Price OR Price → Yield
+    input_mode = st.radio(
+        "Calculation Mode",
+        ["Yield → Price", "Price → Yield"],
+        horizontal=True,
+        help="Choose whether to calculate Price from YTM, or solve for YTM given a market Price.",
+        key="bond_input_mode"
+    )
+
     col1, col2 = st.columns(2)
     
     with col1:
@@ -7397,11 +7406,22 @@ def bond_pricing_section():
         )
     
     with col2:
-        ytm = st.number_input(
-            "Yield to Maturity (YTM)", value=0.04, format="%.4f",
-            help="Annual yield to maturity as a decimal (e.g., 0.04 for 4%). For calculation purposes this value is divided by the payment frequency to obtain the per‑period rate.",
-            key="bond_ytm"
-        )
+        # Conditional input based on calculation mode
+        if input_mode == "Yield → Price":
+            ytm = st.number_input(
+                "Yield to Maturity (YTM)", value=0.04, format="%.4f",
+                help="Annual yield to maturity as a decimal (e.g., 0.04 for 4%). For calculation purposes this value is divided by the payment frequency to obtain the per‑period rate.",
+                key="bond_ytm"
+            )
+            market_price = None
+        else:
+            market_price = st.number_input(
+                "Market Price ($)", value=1000.0, min_value=0.01,
+                help="Enter the observed market price of the bond. The calculator will solve for the YTM.",
+                key="bond_market_price"
+            )
+            ytm = None
+
         maturity = st.number_input(
             "Maturity (years)", value=5, min_value=1, max_value=100,
             help="Time to maturity expressed in years. For example, enter 5 for a 5‑year bond.",
@@ -7423,6 +7443,8 @@ def bond_pricing_section():
             'face_value': face_value,
             'coupon_rate': coupon_rate,
             'ytm': ytm,
+            'market_price': market_price,
+            'input_mode': input_mode,
             'maturity': maturity,
             'freq': freq
         }
@@ -7436,9 +7458,44 @@ def bond_pricing_section():
             face_value = inp['face_value']
             coupon_rate = inp['coupon_rate']
             ytm = inp['ytm']
+            market_price = inp.get('market_price')
+            input_mode_used = inp.get('input_mode', 'Yield → Price')
             maturity = inp['maturity']
             freq = inp['freq']
-            
+
+            # If Price → Yield mode, solve for YTM using Newton-Raphson
+            if input_mode_used == "Price → Yield" and market_price is not None:
+                def price_at_yield(y):
+                    """Calculate bond price given a yield."""
+                    n_periods = maturity * freq
+                    period_coupon = face_value * coupon_rate / freq
+                    period_y = y / freq
+                    if abs(period_y) < 1e-10:
+                        return period_coupon * n_periods + face_value
+                    pv_coupons = period_coupon * (1 - (1 + period_y) ** (-n_periods)) / period_y
+                    pv_face = face_value * (1 + period_y) ** (-n_periods)
+                    return pv_coupons + pv_face
+
+                # Newton-Raphson iteration to solve for YTM
+                y = coupon_rate if coupon_rate > 0 else 0.05  # Initial guess
+                for iteration in range(100):
+                    p = price_at_yield(y)
+                    # Numerical derivative
+                    dy = 0.0001
+                    dpdy = (price_at_yield(y + dy) - price_at_yield(y - dy)) / (2 * dy)
+                    if abs(dpdy) < 1e-12:
+                        break
+                    # Newton-Raphson update
+                    y_new = y - (p - market_price) / dpdy
+                    if abs(y_new - y) < 1e-7:
+                        ytm = y_new
+                        break
+                    y = max(1e-6, y_new)  # Keep yield positive
+                else:
+                    ytm = y  # Use last iteration if no convergence
+
+                st.success(f"**Solved YTM = {ytm*100:.4f}%** (from Price = ${market_price:,.2f})")
+
             n_periods = maturity * freq
             period_coupon_rate = coupon_rate / freq
             period_ytm = ytm / freq

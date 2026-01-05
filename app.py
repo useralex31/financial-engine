@@ -14508,7 +14508,7 @@ Does it ask about risk decomposition, R², or covariances?
 ```
         ''')
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs([
         "📈 Performance Metrics", 
         "🎯 Treynor-Black",
         "🔮 Black-Litterman",
@@ -14516,6 +14516,7 @@ Does it ask about risk decomposition, R², or covariances?
         "🔄 Reverse APT",
         "🔧 Covariance Builder",
         "⚖️ Factor-Neutral",
+        "🎯 Alpha Extraction",
         "🔗 Asset + Factor"
     ])
     
@@ -14541,6 +14542,9 @@ Does it ask about risk decomposition, R², or covariances?
         factor_neutral_tab()
     
     with tab8:
+        alpha_extraction_tab()
+    
+    with tab9:
         joint_asset_factor_tab()
 
 
@@ -16020,6 +16024,281 @@ def covariance_builder_tab():
         
         except ValidationError as e:
             st.error(f"❌ Validation error: {str(e)}")
+        except Exception as e:
+            st.error(f"❌ Calculation error: {str(e)}")
+
+
+def alpha_extraction_tab():
+    """Construct factor-neutral hedge to isolate alpha or solve for required inputs."""
+    st.subheader("🎯 Alpha Extraction (Factor Hedge)")
+    
+    with st.expander("📘 When to Use This Module", expanded=False):
+        st.markdown("""
+**Use Mode 1 (Extract Alpha) when the exam asks:**
+- "Construct a factor-neutral portfolio that isolates the manager's alpha"
+- "How would you hedge out systematic/factor risk from this stock?"
+- "What positions are needed to create a pure alpha bet?"
+- "Is this mispricing an arbitrage opportunity?" (Answer: No, idiosyncratic risk remains)
+- "Calculate the information ratio of a hedged position"
+- "What is the expected return of a factor-hedged portfolio?"
+
+**Use Mode 2 (Reverse: Target Alpha) when the exam asks:**
+- "What expected return is required for this stock to have alpha of X%?"
+- "Given the stock's expected return, what beta would imply zero alpha?" (set target α = 0)
+- "If the manager claims alpha of X%, what must they believe about factor exposures?"
+- "Reverse engineer the implied alpha given disagreement about factor betas"
+- "What expected return justifies the current price under APT?"
+
+**Key conceptual points:**
+- Alpha is the return component NOT explained by factor exposures
+- Hedging factors leaves only alpha + idiosyncratic risk (ε)
+- This is NOT arbitrage because σ_ε > 0 (firm-specific risk remains)
+- Information Ratio = α / σ_ε measures alpha per unit of idiosyncratic risk
+- A stock can have high expected return but zero alpha (if explained by high betas)
+        """)
+    
+    mode = st.radio(
+        "Mode",
+        ["Extract Alpha", "Reverse: Target Alpha"],
+        key="alpha_mode"
+    )
+    
+    return_input_type = st.radio(
+        "Input Type",
+        ["expected_return", "alpha"],
+        format_func=lambda x: "Expected Return" if x == "expected_return" else "Alpha (excess return)",
+        key="alpha_input_type"
+    )
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        betas_input = st.text_area(
+            "Factor Betas (β)", 
+            value="-0.2, 1.4, 0.5",
+            help="One beta per factor (use decimals).",
+            key="alpha_betas"
+        )
+        
+        factor_returns_input = st.text_area(
+            "Factor Expected Returns E[r_Fk]",
+            value="0.08, 0.10, 0.12",
+            key="alpha_factor_returns"
+        )
+        
+        show_stats = st.checkbox("Show factor stats (premiums / vols)", value=False, key="alpha_show_stats")
+        if show_stats:
+            factor_vols_input = st.text_area(
+                "Factor Volatilities (σ_Fk)",
+                value="0.18, 0.20, 0.15",
+                key="alpha_factor_vols"
+            )
+        else:
+            factor_vols_input = ""
+    
+    with col2:
+        if return_input_type == "expected_return":
+            stock_er = st.number_input(
+                "Stock Expected Return E[r]",
+                value=0.14,
+                format="%.4f",
+                key="alpha_stock_er"
+            )
+            stock_alpha_input = st.number_input(
+                "Stock Alpha (if provided)",
+                value=0.04,
+                format="%.4f",
+                key="alpha_stock_alpha",
+                help="Used when Input Type is 'Alpha'"
+            )
+        else:
+            stock_alpha_input = st.number_input(
+                "Stock Alpha (excess return)",
+                value=0.04,
+                format="%.4f",
+                key="alpha_stock_alpha"
+            )
+            stock_er = st.number_input(
+                "Stock Expected Return (if needed for reverse solve)",
+                value=0.14,
+                format="%.4f",
+                key="alpha_stock_er",
+                help="Used when solving for beta in Reverse mode."
+            )
+        
+        idio_vol = st.number_input("Idiosyncratic Volatility σ_ε", value=0.30, format="%.4f", key="alpha_idio_vol")
+        rf = st.number_input("Risk-Free Rate (rf)", value=0.02, format="%.4f", key="alpha_rf")
+        investment = st.number_input("Investment in Stock ($)", value=1.0, format="%.2f", key="alpha_investment")
+        
+        if mode == "Reverse: Target Alpha":
+            target_alpha = st.number_input("Target Alpha (α_target)", value=0.03, format="%.4f", key="alpha_target")
+            solve_for = st.radio(
+                "Solve for",
+                ["Required Expected Return", "Required Beta on Factor K"],
+                key="alpha_solve_for"
+            )
+        else:
+            target_alpha = None
+            solve_for = None
+    
+    betas_preview = parse_messy_input(betas_input)
+    factor_options = [f"Factor {i+1}" for i in range(len(betas_preview))] if betas_preview.size > 0 else ["Factor 1"]
+    
+    if mode == "Reverse: Target Alpha" and solve_for == "Required Beta on Factor K":
+        factor_to_adjust = st.selectbox("Select factor to adjust β", factor_options, key="alpha_factor_adjust")
+    else:
+        factor_to_adjust = None
+    
+    if st.button("🧮 Calculate Factor Hedge", key="alpha_calc"):
+        try:
+            betas = parse_messy_input(betas_input)
+            factor_returns = parse_messy_input(factor_returns_input)
+            
+            if betas.size == 0:
+                st.error("❌ Could not parse betas. Check formatting."); return
+            if factor_returns.size == 0:
+                st.error("❌ Could not parse factor expected returns."); return
+            if betas.size != factor_returns.size:
+                st.error(f"❌ Betas length ({betas.size}) must match factor returns length ({factor_returns.size})."); return
+            
+            n_factors = betas.size
+            factor_labels = [f"Factor {i+1}" for i in range(n_factors)]
+            factor_premiums = factor_returns - rf
+            
+            betas_used = betas.copy()
+            alpha_value = None
+            expected_return = None
+            message_lines = []
+            
+            if mode == "Extract Alpha":
+                if return_input_type == "expected_return":
+                    alpha_value = float(stock_er - rf - np.dot(betas, factor_premiums))
+                else:
+                    alpha_value = float(stock_alpha_input)
+                    stock_er = float(rf + alpha_value + np.dot(betas, factor_premiums))
+                
+                expected_return = rf + alpha_value
+                message_lines.append(f"Computed alpha: {alpha_value*100:.2f}%.")
+            
+            else:  # Reverse mode
+                alpha_target = float(target_alpha)
+                
+                if solve_for == "Required Expected Return":
+                    alpha_value = alpha_target
+                    expected_return = rf + alpha_target + float(np.dot(betas, factor_premiums))
+                    message_lines.append(f"To achieve α = {alpha_target*100:.2f}%, expected return must be {expected_return*100:.2f}%.")
+                else:
+                    if return_input_type != "expected_return":
+                        st.error("❌ Provide an expected return (set Input Type to 'Expected Return') to solve for β."); return
+                    
+                    factor_idx = factor_options.index(factor_to_adjust) if factor_to_adjust in factor_options else 0
+                    denom = factor_premiums[factor_idx]
+                    if abs(denom) < 1e-8:
+                        st.error("❌ Factor risk premium is zero; cannot solve for beta on this factor."); return
+                    
+                    other_contrib = float(np.dot(np.delete(betas, factor_idx), np.delete(factor_premiums, factor_idx)))
+                    required_beta = (stock_er - rf - alpha_target - other_contrib) / denom
+                    
+                    betas_used = betas.copy()
+                    betas_used[factor_idx] = required_beta
+                    
+                    alpha_value = alpha_target
+                    expected_return = stock_er
+                    message_lines.append(
+                        f"To achieve α = {alpha_target*100:.2f}% with E[r] = {stock_er*100:.2f}%, "
+                        f"β on {factor_labels[factor_idx]} must be {required_beta:.4f}."
+                    )
+            
+            factor_positions = -betas_used * investment
+            cash_position = -np.sum(factor_positions)
+            
+            positions = [{"Instrument": "Stock", "Position": investment}]
+            for lbl, pos in zip(factor_labels, factor_positions):
+                positions.append({"Instrument": lbl, "Position": pos})
+            positions.append({"Instrument": "Risk-Free (financing)", "Position": cash_position})
+            
+            positions_df = pd.DataFrame(positions)
+            net_investment = positions_df["Position"].sum()
+            
+            exposures_after_hedge = betas_used * investment + factor_positions
+            
+            st.subheader("📊 Hedge Construction")
+            st.write("**Positions per $ invested in the stock:**")
+            st.dataframe(positions_df.style.format({"Position": "{:.4f}"}))
+            st.info(f"Net capital deployed = {net_investment:.4f} (should equal investment). Factor exposures cancel to ~0.")
+            
+            st.write("**Factor Exposures After Hedge (should be ~0):**")
+            exposure_df = pd.DataFrame({
+                "Factor": factor_labels,
+                "Exposure": exposures_after_hedge
+            })
+            st.dataframe(exposure_df.style.format({"Exposure": "{:.6f}"}))
+            
+            info_ratio = alpha_value / idio_vol if idio_vol > 0 else 0.0
+            expected_excess = alpha_value
+            
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Alpha (excess)", f"{alpha_value*100:.2f}%")
+            with col2:
+                st.metric("Expected Return", f"{expected_return*100:.2f}%")
+            with col3:
+                st.metric("Idiosyncratic Risk σ_ε", f"{idio_vol*100:.2f}%")
+            with col4:
+                st.metric("Information Ratio", f"{info_ratio:.4f}")
+            
+            st.success("Not an arbitrage: idiosyncratic risk (σ_ε) remains. Only factor risk is hedged.")
+            st.write("Factor exposures = 0 → portfolio return = rf + α + ε (ε is idiosyncratic).")
+            
+            if show_stats and factor_vols_input:
+                factor_vols = parse_messy_input(factor_vols_input)
+                if factor_vols.size == n_factors:
+                    stats_df = pd.DataFrame({
+                        "Factor": factor_labels,
+                        "E[r_F]": factor_returns,
+                        "Premium (E[r_F]-rf)": factor_premiums,
+                        "σ_F": factor_vols,
+                        "Sharpe_F": factor_premiums / factor_vols
+                    })
+                    st.write("**Factor Premiums and Sharpe:**")
+                    st.dataframe(stats_df.style.format({
+                        "E[r_F]": "{:.4f}",
+                        "Premium (E[r_F]-rf)": "{:.4f}",
+                        "σ_F": "{:.4f}",
+                        "Sharpe_F": "{:.4f}"
+                    }))
+                else:
+                    st.warning("Factor volatilities length mismatch; skipping stats table.")
+            
+            if message_lines:
+                st.info("\n".join(message_lines))
+            
+            with st.expander("🧾 Step-by-step derivation"):
+                st.markdown("""
+**Alpha definition:**  
+$\\alpha = E[r] - r_f - \\sum_k \\beta_k \\left(E[r_{F_k}] - r_f\\right)$  
+
+**Hedge construction:**  
+- Short factor portfolios: $w_k = -\\beta_k$ per $1 invested in the stock  
+- Add cash: $w_{cash} = -\\sum_k w_k$ so total capital = $1$  
+
+**Resulting return:**  
+$r_{hedged} = r_f + \\alpha + \\varepsilon$ (all factor terms cancel)  
+Information Ratio: $IR = \\alpha / \\sigma_\\varepsilon$  
+This is **not arbitrage** because $\\sigma_\\varepsilon > 0$.
+                """)
+            
+            with st.expander("📄 Excel Implementation"):
+                st.markdown(f"""
+- Enter betas in cells B2:..., factor premiums in C2:...  
+- Alpha formula: `=E_r_stock - rf - SUMPRODUCT(betas, premiums)`  
+- Hedge weights: `=-betas` ; Cash: `=-SUM(hedge_weights)`  
+- Hedged expected return: `=rf + alpha`  
+- Information Ratio: `=alpha / sigma_epsilon`  
+- Reverse (required E[r]): `=rf + alpha_target + SUMPRODUCT(betas, premiums)`  
+- Reverse (required β_k): `(E_r - rf - alpha_target - SUM(other betas*premiums)) / premium_k`
+                """)
+        
         except Exception as e:
             st.error(f"❌ Calculation error: {str(e)}")
 
